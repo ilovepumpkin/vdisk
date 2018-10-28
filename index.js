@@ -3,14 +3,19 @@ import req from 'superagent';
 import cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
+const md5File = require('md5-file');
 
 class VdiskCrawler {
   constructor(url) {
     this.url = url;
+    this.isVerify = false;
   }
 
   async start() {
     await this.handleFolderPage(this.url);
+    // console.log('Finish download');
+    // this.isVerify = true;
+    // await this.handleFolderPage(this.url);
   }
 
   async handleFolderPage(folderPageUrl, parentPath) {
@@ -23,27 +28,71 @@ class VdiskCrawler {
       fs.mkdirSync(folderPath);
     }
 
-    items.forEach(item => {
+    items.forEach(async item => {
       if (item['is_dir']) {
         this.handleFolderPage(item['link'], folderPath);
       } else {
-        this.downloadFile(path.join(folderPath, item['name']), item['url']);
+        const filePath = path.join(folderPath, item['name']);
+        const fileUrl = item['url'];
+        const md5 = item['md5'];
+        if (this.isVerify) {
+          this.verifyFile(filePath, fileUrl, md5);
+        } else {
+          await this.downloadFile(filePath, fileUrl, md5);
+        }
       }
     });
   }
 
-  downloadFile(filePath, fileUrl) {
+  verifyFile(filePath, fileUrl, md5) {
+    if (!fs.existsSync(filePath)) {
+      console.log(`[Need redownload] ${filePath} does not exist. `);
+    } else {
+      md5File(filePath, (err, hash) => {
+        if (hash === md5) {
+          console.log(`[Verified] ${filePath}`);
+        } else {
+          console.log(
+            `[Need redownload] ${filePath} exists but incomplete. Delete it now. `
+          );
+          fs.unlink(filePath, function(err) {
+            console.error(err);
+          });
+        }
+      });
+    }
+  }
+
+  async downloadFile(filePath, fileUrl, md5) {
     // console.log(filePath, fileUrl);
+    const that = this;
     if (!fs.existsSync(filePath)) {
       let file = fs.createWriteStream(filePath);
       file.on('finish', function() {
         console.log(`[Done] ${filePath}`);
       });
-      file.on('error', function() {
+      file.on('error', function(err) {
         console.log(`[Error] ${filePath}`);
+        console.error(err);
       });
-      req.get(fileUrl).pipe(file);
+      await req.get(fileUrl).pipe(file);
     } else {
+      md5File(filePath, (err, hash) => {
+        if (hash === md5) {
+          //console.log(`[Skip] ${filePath} exists already. `);
+        } else {
+          console.log(
+            `[Redownload] ${filePath} exists but incomplete. Redownload it now. Expected: ${md5}, Actual:${hash}`
+          );
+          fs.unlink(filePath, function(err) {
+            if (!err) {
+              that.downloadFile(filePath, fileUrl, md5);
+            } else {
+              console.error(err);
+            }
+          });
+        }
+      });
       return;
     }
   }
